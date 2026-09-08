@@ -1,5 +1,24 @@
 /**
- * usar para LED RGB
+ * Turtle — extensão MakeCode para o Keyestudio Micro:bit Mini Smart Turtle Car
+ * Modelos KS4014 / KS4024
+ *
+ * CONDECOMA — Projeto Azurita Conectada
+ * https://github.com/SauloVictorS/Turtle
+ *
+ * Mapa de pinos (conforme manual Keyestudio):
+ *   P0  → buzzer passivo
+ *   P1  → Trig do sensor ultrassônico
+ *   P2  → Echo do sensor ultrassônico
+ *   P8  → 4 LEDs WS2812 (faróis)
+ *   P11 → receptor infravermelho  (ATENÇÃO: mesmo pino do botão B do micro:bit)
+ *   P14 → sensor de linha esquerdo
+ *   P15 → sensor de linha central
+ *   P16 → sensor de linha direito
+ *   I2C → PCA9685 (endereço 0x47): motores e os 2 LEDs RGB da placa
+ */
+
+/**
+ * Cores dos LEDs RGB e dos faróis
  */
 enum COLOR {
     //% block="vermelho"
@@ -8,22 +27,29 @@ enum COLOR {
     green,
     //% block="azul"
     blue,
+    //% block="amarelo"
+    yellow,
+    //% block="ciano"
+    cyan,
+    //% block="rosa"
+    magenta,
     //% block="branco"
     white,
     //% block="apagado"
     black
 }
+
 /**
- * usar para controlar o motor (direção do carro)
+ * Direção do carro
  */
 enum DIR {
     //% block="para frente"
     Run_forward = 0,
     //% block="para trás"
     Run_back = 1,
-    //% block="virar para a esquerda"
+    //% block="girando para a esquerda"
     Turn_Left = 2,
-    //% block="virar para a direita"
+    //% block="girando para a direita"
     Turn_Right = 3
 }
 
@@ -38,7 +64,7 @@ enum LR {
 }
 
 /**
- * Estado do motor
+ * Como o carro para
  */
 enum MotorState {
     //% block="parar"
@@ -48,82 +74,84 @@ enum MotorState {
 }
 
 /**
- * Direção do motor
- */
-enum MD {
-    //% block="para frente"
-    Forward = 0,
-    //% block="para trás"
-    Back = 1
-}
-
-/**
  * Sensores de linha
  */
 enum LT {
     //% block="esquerda"
-    Left,
+    Left = 0,
     //% block="centro"
-    Center,
+    Center = 1,
     //% block="direita"
-    Right
+    Right = 2
+}
+
+/**
+ * Nível digital que representa "linha detectada"
+ */
+enum LINE_LEVEL {
+    //% block="0"
+    Low = 0,
+    //% block="1"
+    High = 1
 }
 
 //% color="#ff6800" icon="\uf135" weight=150
-//% groups="['Motor', 'LED RGB', 'Neo-pixel', 'Sensor', 'Som']"
+//% block="Turtle"
+//% groups="['Motor', 'Ajustes do motor', 'LED RGB', 'Faróis', 'Sensor', 'Som', 'Diagnóstico']"
 namespace Turtle {
-    /**
-     * usar para controlar o PCA9685
-     */
-    const PCA9685_ADDRESS = 0x47;   //endereço do dispositivo
+
+    // =====================================================================
+    // PCA9685 — driver de PWM (motores + LEDs RGB da placa)
+    // =====================================================================
+
+    const PCA9685_ADDRESS = 0x47;
     const MODE1 = 0x00;
-    //const MODE2 = 0x01;
-    //const SUBADR1 = 0x02;
-    //const SUBADR2 = 0x03;
-    //const SUBADR3 = 0x04;
     const PRESCALE = 0xFE;
     const LED0_ON_L = 0x06;
-    const LED0_ON_H = 0x07;
-    const LED0_OFF_L = 0x08;
-    //const LED0_OFF_H = 0x09;
-    //const ALL_LED_ON_L = 0xFA;
-    //const ALL_LED_ON_H = 0xFB;
-    //const ALL_LED_OFF_L = 0xFC;
-    //const ALL_LED_OFF_H = 0xFD;
 
-    let PCA9685_Initialized = false
+    // 50 Hz é frequência de servo. Motor DC em 50 Hz chia e não tem torque
+    // em velocidade baixa. ~1 kHz resolve os dois problemas.
+    const PWM_FREQ = 1000;
 
-    function i2cRead(addr: number, reg: number) {
+    // Canais do PCA9685
+    const CH_ESQ_PWM = 0, CH_ESQ_A = 1, CH_ESQ_B = 2;
+    const CH_DIR_PWM = 5, CH_DIR_A = 4, CH_DIR_B = 3;
+    const CH_LED_ESQ_R = 9, CH_LED_ESQ_G = 10, CH_LED_ESQ_B = 11;
+    const CH_LED_DIR_R = 7, CH_LED_DIR_G = 6, CH_LED_DIR_B = 8;
+
+    let PCA9685_Initialized = false;
+
+    function i2cRead(addr: number, reg: number): number {
         pins.i2cWriteNumber(addr, reg, NumberFormat.UInt8BE);
-        let val = pins.i2cReadNumber(addr, NumberFormat.UInt8BE);
-        return val;
+        return pins.i2cReadNumber(addr, NumberFormat.UInt8BE);
     }
 
-    function i2cWrite(PCA9685_ADDRESS: number, reg: number, value: number) {
-        let buf = pins.createBuffer(2)
-        buf[0] = reg
-        buf[1] = value
-        pins.i2cWriteBuffer(PCA9685_ADDRESS, buf)
+    function i2cWrite(addr: number, reg: number, value: number): void {
+        const buf = pins.createBuffer(2);
+        buf[0] = reg;
+        buf[1] = value;
+        pins.i2cWriteBuffer(addr, buf);
     }
 
     function setFreq(freq: number): void {
-        // limitar a frequência
         let prescaleval = 25000000;
         prescaleval /= 4096;
         prescaleval /= freq;
         prescaleval -= 1;
-        let prescale = prescaleval; //Math.Floor(prescaleval + 0.5);
-        let oldmode = i2cRead(PCA9685_ADDRESS, MODE1);
-        let newmode = (oldmode & 0x7F) | 0x10; // sleep
-        i2cWrite(PCA9685_ADDRESS, MODE1, newmode); // vai para sleep
-        i2cWrite(PCA9685_ADDRESS, PRESCALE, prescale); // configura o prescaler
+        // o registrador é inteiro — arredondar é obrigatório
+        const prescale = Math.floor(prescaleval + 0.5);
+
+        const oldmode = i2cRead(PCA9685_ADDRESS, MODE1);
+        const newmode = (oldmode & 0x7F) | 0x10;   // dormir
+        i2cWrite(PCA9685_ADDRESS, MODE1, newmode);
+        i2cWrite(PCA9685_ADDRESS, PRESCALE, prescale);
         i2cWrite(PCA9685_ADDRESS, MODE1, oldmode);
         control.waitMicros(5000);
         i2cWrite(PCA9685_ADDRESS, MODE1, oldmode | 0xa1);
     }
 
     function setPwm(channel: number, on: number, off: number): void {
-        let buf = pins.createBuffer(5);
+        const buf = pins.createBuffer(5);
         buf[0] = LED0_ON_L + 4 * channel;
         buf[1] = on & 0xff;
         buf[2] = (on >> 8) & 0xff;
@@ -132,373 +160,645 @@ namespace Turtle {
         pins.i2cWriteBuffer(PCA9685_ADDRESS, buf);
     }
 
-    function init_PCA9685(): void {
-        i2cWrite(PCA9685_ADDRESS, MODE1, 0x00);  //inicializa o registrador de modo 1
-        setFreq(50);   //20ms
+    /**
+     * Toda função pública chama isto. Assim não importa qual bloco o aluno
+     * usa primeiro — a placa sempre está pronta.
+     */
+    function iniciar(): void {
+        if (PCA9685_Initialized) return;
+        i2cWrite(PCA9685_ADDRESS, MODE1, 0x00);
+        setFreq(PWM_FREQ);
         for (let idx = 0; idx < 16; idx++) {
             setPwm(idx, 0, 0);
         }
         PCA9685_Initialized = true;
     }
 
-    /////////////////////////////////////////////////////
+    // =====================================================================
+    // MOTOR
+    // =====================================================================
+
+    let trimEsq = 0;        // compensação por motor, em %
+    let trimDir = 0;
+    let velMin = 0;         // velocidade mínima em que o motor realmente gira
+
+    function velocidadeReal(speed: number, trim: number): number {
+        if (speed <= 0) return 0;
+        let v = speed * (100 + trim) / 100;
+        if (v < velMin) v = velMin;
+        return Math.constrain(v, 0, 100);
+    }
+
+    function pwmDaVelocidade(speed: number, trim: number): number {
+        return Math.round(Math.map(velocidadeReal(speed, trim), 0, 100, 0, 4095));
+    }
+
+    function acionarEsquerdo(speed: number, paraTras: boolean): void {
+        setPwm(CH_ESQ_PWM, 0, pwmDaVelocidade(speed, trimEsq));
+        setPwm(CH_ESQ_A, 0, paraTras ? 4095 : 0);
+        setPwm(CH_ESQ_B, 0, paraTras ? 0 : 4095);
+    }
+
+    function acionarDireito(speed: number, paraTras: boolean): void {
+        setPwm(CH_DIR_PWM, 0, pwmDaVelocidade(speed, trimDir));
+        setPwm(CH_DIR_A, 0, paraTras ? 4095 : 0);
+        setPwm(CH_DIR_B, 0, paraTras ? 0 : 4095);
+    }
+
     /**
-     * movimento do carro
+     * Move o carro numa direção, com velocidade de 0 a 100%.
      */
+    //% blockId=turtle_run
     //% block="carro $direction velocidade: $speed \\%"
-    //% speed.min=0 speed.max=100
-    //% group="Motor" weight=99
-    export function run(direction: DIR, speed: number) {
-        if (!PCA9685_Initialized) {
-            init_PCA9685();
-        }
-        let speed_value = Math.map(speed, 0, 100, 0, 4095);
+    //% speed.min=0 speed.max=100 speed.defl=50
+    //% group="Motor" weight=100
+    export function run(direction: DIR, speed: number): void {
+        iniciar();
         switch (direction) {
-            case 0:  //andar para frente
-                setPwm(0, 0, speed_value);  //controla a velocidade : 0---4095
-                setPwm(1, 0, 0);
-                setPwm(2, 0, 4095);
-                setPwm(5, 0, speed_value);  //controla a velocidade : 0---4095
-                setPwm(4, 0, 0);
-                setPwm(3, 0, 4095);
+            case DIR.Run_forward:
+                acionarEsquerdo(speed, false);
+                acionarDireito(speed, false);
                 break;
-            case 1:  //andar para trás
-                setPwm(0, 0, speed_value);  //controla a velocidade : 0---4095
-                setPwm(1, 0, 4095);
-                setPwm(2, 0, 0);
-                setPwm(5, 0, speed_value);  //controla a velocidade : 0---4095
-                setPwm(4, 0, 4095);
-                setPwm(3, 0, 0);
+            case DIR.Run_back:
+                acionarEsquerdo(speed, true);
+                acionarDireito(speed, true);
                 break;
-            case 2:  //virar para a esquerda
-                setPwm(0, 0, speed_value);  //controla a velocidade : 0---4095
-                setPwm(1, 0, 4095);
-                setPwm(2, 0, 0);
-                setPwm(5, 0, speed_value);  //controla a velocidade : 0---4095
-                setPwm(4, 0, 0);
-                setPwm(3, 0, 4095);
+            case DIR.Turn_Left:
+                acionarEsquerdo(speed, true);
+                acionarDireito(speed, false);
                 break;
-            case 3:  //virar para a direita
-                setPwm(0, 0, speed_value);  //controla a velocidade : 0---4095
-                setPwm(1, 0, 0);
-                setPwm(2, 0, 4095);
-                setPwm(5, 0, speed_value);  //controla a velocidade : 0---4095
-                setPwm(4, 0, 4095);
-                setPwm(3, 0, 0);
+            case DIR.Turn_Right:
+                acionarEsquerdo(speed, false);
+                acionarDireito(speed, true);
                 break;
-            default: break;
         }
     }
+
     /**
-     * definir estado do carro (parar ou frear)
+     * Move o carro por um tempo determinado e para sozinho.
+     * Útil para as primeiras aulas, antes de o aluno conhecer laços.
      */
-    //% block="carro $sta"
+    //% blockId=turtle_run_for
+    //% block="carro $direction velocidade: $speed \\% por $ms ms"
+    //% speed.min=0 speed.max=100 speed.defl=50
+    //% ms.shadow=timePicker ms.defl=1000
+    //% group="Motor" weight=99
+    export function andarPor(direction: DIR, speed: number, ms: number): void {
+        run(direction, speed);
+        basic.pause(ms);
+        state(MotorState.stop);
+    }
+
+    /**
+     * Controla os dois lados separadamente.
+     * Valores negativos fazem a roda girar para trás.
+     * É este bloco que permite curvas suaves e controle proporcional.
+     */
+    //% blockId=turtle_wheels
+    //% block="carro esquerda $esquerda \\% direita $direita \\%"
+    //% esquerda.min=-100 esquerda.max=100 esquerda.defl=50
+    //% direita.min=-100 direita.max=100 direita.defl=50
     //% group="Motor" weight=98
-    export function state(sta: MotorState) {
-        //if (!PCA9685_Initialized) {
-        //init_PCA9685();
-        //}
-
-        if (sta == 0) {           //parar
-            setPwm(0, 0, 4095);  //controla a velocidade : 0---4095
-            setPwm(1, 0, 0);
-            setPwm(2, 0, 0);
-            setPwm(5, 0, 4095);  //controla a velocidade : 0---4095
-            setPwm(4, 0, 0);
-            setPwm(3, 0, 0);
-        }
-
-        if (sta == 1) {           //frear
-            setPwm(0, 0, 0);  //controla a velocidade : 0---4095
-            //setPwm(1, 0, 4095);
-            //setPwm(2, 0, 4095);
-            setPwm(5, 0, 0);  //controla a velocidade : 0---4095
-            //setPwm(4, 0, 4095);
-            //setPwm(3, 0, 4095);
-        }
+    export function rodas(esquerda: number, direita: number): void {
+        iniciar();
+        const e = Math.constrain(esquerda, -100, 100);
+        const d = Math.constrain(direita, -100, 100);
+        acionarEsquerdo(Math.abs(e), e < 0);
+        acionarDireito(Math.abs(d), d < 0);
     }
+
     /**
-     * definir velocidade de um motor
+     * Para o carro.
+     * "parar" solta as rodas (o carro desliza um pouco).
+     * "frear" trava as rodas (o carro para na hora).
      */
-    //% block="motor do $M $D velocidade: $speed \\%"
-    //% speed.min=0 speed.max=100
+    //% blockId=turtle_state
+    //% block="carro $sta"
     //% group="Motor" weight=97
-    export function Motor(M: LR, D: MD, speed: number) {
-        if (!PCA9685_Initialized) {
-            init_PCA9685();
-        }
-        let speed_value = Math.map(speed, 0, 100, 0, 4095);
-        if (M == 0 && D == 0) {
-            setPwm(0, 0, speed_value);  //controla a velocidade : 0---4095
-            setPwm(1, 0, 0);
-            setPwm(2, 0, 4095);
-        }
-        if (M == 0 && D == 1) {
-            setPwm(0, 0, speed_value);  //controla a velocidade : 0---4095
-            setPwm(1, 0, 4095);
-            setPwm(2, 0, 0);
-        }
-
-        if (M == 1 && D == 0) {
-            setPwm(5, 0, speed_value);  //controla a velocidade : 0---4095
-            setPwm(4, 0, 0);
-            setPwm(3, 0, 4095);
-        }
-        if (M == 1 && D == 1) {
-            setPwm(5, 0, speed_value);  //controla a velocidade : 0---4095
-            setPwm(4, 0, 4095);
-            setPwm(3, 0, 0);
-        }
-
-    }
-    /**
-     * definir estado do motor (parar ou frear) em um lado
-     */
-    //% block="motor do $M $act"
-    //% speed.min=0 speed.max=100
-    //% group="Motor" weight=96
-    export function MotorSta(M: LR, act: MotorState) {
-        if (!PCA9685_Initialized) {
-            init_PCA9685();
-        }
-
-        if (M == 0 && act == 0) {           //parar
-            setPwm(0, 0, 4095);  //controla a velocidade : 0---4095
-            setPwm(1, 0, 0);
-            setPwm(2, 0, 0);
-        }
-        if (M == 0 && act == 1) {           //frear
-            setPwm(0, 0, 0);  //controla a velocidade : 0---4095
-            //setPwm(1, 0, 4095);
-            //setPwm(2, 0, 4095);
-        }
-
-        if (M == 1 && act == 0) {           //parar
-            setPwm(5, 0, 4095);  //controla a velocidade : 0---4095
-            setPwm(4, 0, 0);
-            setPwm(3, 0, 0);
-        }
-        if (M == 1 && act == 1) {           //frear
-            setPwm(5, 0, 0);  //controla a velocidade : 0---4095
-            //setPwm(4, 0, 4095);
-            //setPwm(3, 0, 4095);
+    export function state(sta: MotorState): void {
+        iniciar();
+        if (sta == MotorState.stop) {          // roda livre
+            setPwm(CH_ESQ_PWM, 0, 4095);
+            setPwm(CH_ESQ_A, 0, 0);
+            setPwm(CH_ESQ_B, 0, 0);
+            setPwm(CH_DIR_PWM, 0, 4095);
+            setPwm(CH_DIR_A, 0, 0);
+            setPwm(CH_DIR_B, 0, 0);
+        } else {                                // freio: as duas entradas em nível alto
+            setPwm(CH_ESQ_PWM, 0, 4095);
+            setPwm(CH_ESQ_A, 0, 4095);
+            setPwm(CH_ESQ_B, 0, 4095);
+            setPwm(CH_DIR_PWM, 0, 4095);
+            setPwm(CH_DIR_A, 0, 4095);
+            setPwm(CH_DIR_B, 0, 4095);
         }
     }
 
-    /////////////////////////////////////////////////////
+    // ---------------------------------------------------------------------
+    // Ajustes do motor
+    // ---------------------------------------------------------------------
+
     /**
-     * ajustar brilho dos LEDs RGB
+     * Corrige o carro que puxa para um lado.
+     * Cada chassi tem o número dele: anote e cole na tampa.
      */
-    let L_brightness = 4095;  //controla o brilho dos LEDs RGB
+    //% blockId=turtle_trim
+    //% block="compensar motor esquerdo $esquerda \\% direito $direita \\%"
+    //% esquerda.min=-50 esquerda.max=50 esquerda.defl=0
+    //% direita.min=-50 direita.max=50 direita.defl=0
+    //% group="Ajustes do motor" weight=90
+    export function compensarMotores(esquerda: number, direita: number): void {
+        trimEsq = Math.constrain(esquerda, -50, 50);
+        trimDir = Math.constrain(direita, -50, 50);
+    }
+
+    /**
+     * Abaixo de uma certa porcentagem o motor não vence o próprio atrito.
+     * Este bloco define o piso: qualquer velocidade maior que zero e menor
+     * que este valor é elevada até ele.
+     */
+    //% blockId=turtle_min_speed
+    //% block="velocidade mínima do motor $v \\%"
+    //% v.min=0 v.max=60 v.defl=30
+    //% group="Ajustes do motor" weight=89
+    //% advanced=true
+    export function velocidadeMinima(v: number): void {
+        velMin = Math.constrain(v, 0, 60);
+    }
+
+    // =====================================================================
+    // LED RGB (os dois LEDs da placa controladora)
+    // =====================================================================
+
+    let L_brightness = 4095;
+
+    function corHex(col: COLOR): number {
+        switch (col) {
+            case COLOR.red: return 0xFF0000;
+            case COLOR.green: return 0x00FF00;
+            case COLOR.blue: return 0x0000FF;
+            case COLOR.yellow: return 0xFFFF00;
+            case COLOR.cyan: return 0x00FFFF;
+            case COLOR.magenta: return 0xFF00FF;
+            case COLOR.white: return 0xFFFFFF;
+            default: return 0x000000;
+        }
+    }
+
+    function aplicarLed(lado: LR, r: number, g: number, b: number): void {
+        const R = Math.round(Math.map(r, 0, 255, 0, L_brightness));
+        const G = Math.round(Math.map(g, 0, 255, 0, L_brightness));
+        const B = Math.round(Math.map(b, 0, 255, 0, L_brightness));
+        if (lado == LR.LeftSide) {
+            setPwm(CH_LED_ESQ_R, 0, R);
+            setPwm(CH_LED_ESQ_G, 0, G);
+            setPwm(CH_LED_ESQ_B, 0, B);
+        } else {
+            setPwm(CH_LED_DIR_R, 0, R);
+            setPwm(CH_LED_DIR_G, 0, G);
+            setPwm(CH_LED_DIR_B, 0, B);
+        }
+    }
+
+    /**
+     * Brilho dos LEDs RGB da placa (0 a 255).
+     */
+    //% blockId=turtle_led_brightness
     //% block="brilho do LED $br"
-    //% br.min=0 br.max=255
+    //% br.min=0 br.max=255 br.defl=128
     //% group="LED RGB" weight=79
-    export function LED_brightness(br: number) {
-        if (!PCA9685_Initialized) {
-            init_PCA9685();
-        }
-        L_brightness = Math.map(br, 0, 255, 0, 4095);
+    export function LED_brightness(br: number): void {
+        iniciar();
+        L_brightness = Math.round(Math.map(Math.constrain(br, 0, 255), 0, 255, 0, 4095));
     }
+
     /**
-     * definir a cor do LED RGB usando o cartão de cores
+     * Acende um dos LEDs RGB da placa com uma cor pronta.
      */
+    //% blockId=turtle_led
     //% block="definir LED RGB do $RgbLed como $col"
     //% group="LED RGB" weight=78
-    export function Led(RgbLed: LR, col: COLOR) {
-        if (!PCA9685_Initialized) {
-            init_PCA9685();
-        }
-
-        if (RgbLed == 0) {    //LED RGB do lado esquerdo
-            setPwm(9, 0, 0);
-            setPwm(10, 0, 0);
-            setPwm(11, 0, 0);
-            if (col == COLOR.red) {
-                setPwm(9, 0, L_brightness);
-            }
-            if (col == COLOR.green) {
-                setPwm(10, 0, L_brightness);
-            }
-            if (col == COLOR.blue) {
-                setPwm(11, 0, L_brightness);
-            }
-            if (col == COLOR.white) {
-                setPwm(9, 0, L_brightness);
-                setPwm(10, 0, L_brightness);
-                setPwm(11, 0, L_brightness);
-            }
-            if (col == COLOR.black) {
-            }
-        }
-
-        if (RgbLed == 1) {    //LED RGB do lado direito
-            setPwm(6, 0, 0);
-            setPwm(7, 0, 0);
-            setPwm(8, 0, 0);
-            if (col == COLOR.red) {
-                setPwm(7, 0, L_brightness);
-            }
-            if (col == COLOR.green) {
-                setPwm(6, 0, L_brightness);
-            }
-            if (col == COLOR.blue) {
-                setPwm(8, 0, L_brightness);
-            }
-            if (col == COLOR.white) {
-                setPwm(6, 0, L_brightness);
-                setPwm(7, 0, L_brightness);
-                setPwm(8, 0, L_brightness);
-            }
-            if (col == COLOR.black) {
-            }
-        }
+    export function Led(RgbLed: LR, col: COLOR): void {
+        iniciar();
+        const c = corHex(col);
+        aplicarLed(RgbLed, (c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF);
     }
 
-
     /**
-     * definir a cor dos dois LEDs RGB ao mesmo tempo
+     * Acende os dois LEDs RGB da placa com a mesma cor.
      */
+    //% blockId=turtle_both_led
     //% block="definir ambos LEDs RGB como $col"
     //% group="LED RGB" weight=77
-    export function BothLed(col: COLOR) {
-        if (!PCA9685_Initialized) {
-            init_PCA9685();
-        }
-
-        // apaga os pinos antes de aplicar a cor
-        setPwm(9, 0, 0);
-        setPwm(10, 0, 0);
-        setPwm(11, 0, 0);
-
-        setPwm(6, 0, 0);
-        setPwm(7, 0, 0);
-        setPwm(8, 0, 0);
-
-        // aplica a cor nos dois lados
-        if (col == COLOR.red) {
-            setPwm(9, 0, L_brightness);
-            setPwm(7, 0, L_brightness);
-        }
-        if (col == COLOR.green) {
-            setPwm(10, 0, L_brightness);
-            setPwm(6, 0, L_brightness);
-        }
-        if (col == COLOR.blue) {
-            setPwm(11, 0, L_brightness);
-            setPwm(8, 0, L_brightness);
-        }
-        if (col == COLOR.white) {
-            setPwm(9, 0, L_brightness);
-            setPwm(10, 0, L_brightness);
-            setPwm(11, 0, L_brightness);
-
-            setPwm(6, 0, L_brightness);
-            setPwm(7, 0, L_brightness);
-            setPwm(8, 0, L_brightness);
-        }
-        if (col == COLOR.black) {
-            // já apagado acima
-        }
+    export function BothLed(col: COLOR): void {
+        Led(LR.LeftSide, col);
+        Led(LR.RightSide, col);
     }
 
     /**
-     * definir a cor do LED RGB usando valores de R, G e B
+     * Acende um LED RGB da placa misturando vermelho, verde e azul.
      */
+    //% blockId=turtle_set_led
     //% block="definir LED RGB do $RgbLed R:$red G:$green B:$blue"
-    //% red.min=0 red.max=255 green.min=0 green.max=255 blue.min=0 blue.max=255
+    //% red.min=0 red.max=255 red.defl=255
+    //% green.min=0 green.max=255 green.defl=0
+    //% blue.min=0 blue.max=255 blue.defl=0
     //% group="LED RGB" weight=76
-    export function SetLed(RgbLed: LR, red: number, green: number, blue: number) {
-        if (!PCA9685_Initialized) {
-            init_PCA9685();
-        }
-
-        let R = Math.map(red, 0, 255, 0, L_brightness);
-        let G = Math.map(green, 0, 255, 0, L_brightness);
-        let B = Math.map(blue, 0, 255, 0, L_brightness);
-
-        if (RgbLed == 0) {    //LED RGB do lado esquerdo
-            setPwm(9, 0, R);
-            setPwm(10, 0, G);
-            setPwm(11, 0, B);
-        }
-        if (RgbLed == 1) {    //LED RGB do lado direito
-            setPwm(6, 0, G);
-            setPwm(7, 0, R);
-            setPwm(8, 0, B);
-        }
+    export function SetLed(RgbLed: LR, red: number, green: number, blue: number): void {
+        iniciar();
+        aplicarLed(RgbLed, red, green, blue);
     }
+
     /**
-     * desligar todos os LEDs RGB
+     * Apaga os dois LEDs RGB da placa.
      */
+    //% blockId=turtle_off_led
     //% block="desligar todos LEDs RGB"
     //% group="LED RGB" weight=75
-    export function OFFLed() {
-        if (!PCA9685_Initialized) {
-            init_PCA9685();
-        }
-        let led_pin;
-        for (led_pin = 6; led_pin <= 11; led_pin++) {
-            setPwm(led_pin, 0, 0);
+    export function OFFLed(): void {
+        iniciar();
+        for (let ch = 6; ch <= 11; ch++) {
+            setPwm(ch, 0, 0);
         }
     }
 
-    /////////////////////////////////////////////////////
+    // =====================================================================
+    // FARÓIS — 4 LEDs WS2812 no pino P8
+    // =====================================================================
+
+    const NUM_FAROIS = 4;
+    let farois: neopixel.Strip = null;
+
     /**
-     * ler sensores de seguidor de linha (retorna um número de 0 a 7)
+     * A tira de LEDs do carro, já configurada no P8 com 4 LEDs.
+     * Use quando quiser os blocos originais da extensão Neopixel.
      */
-    //% block="sensor de linha"
+    //% blockId=turtle_strip
+    //% block="tira de faróis do carro"
+    //% group="Faróis" weight=69
+    //% advanced=true
+    export function tiraDeFarois(): neopixel.Strip {
+        if (!farois) {
+            farois = neopixel.create(DigitalPin.P8, NUM_FAROIS, NeoPixelMode.RGB);
+            farois.setBrightness(60);
+            farois.clear();
+            farois.show();
+        }
+        return farois;
+    }
+
+    /**
+     * Acende um farol (0 a 3) com uma cor pronta.
+     */
+    //% blockId=turtle_headlight
+    //% block="definir farol $n como $col"
+    //% n.min=0 n.max=3 n.defl=0
+    //% group="Faróis" weight=68
+    export function farol(n: number, col: COLOR): void {
+        const s = tiraDeFarois();
+        s.setPixelColor(Math.constrain(n, 0, NUM_FAROIS - 1), corHex(col));
+        s.show();
+    }
+
+    /**
+     * Acende os quatro faróis com a mesma cor.
+     */
+    //% blockId=turtle_all_headlights
+    //% block="definir todos os faróis como $col"
+    //% group="Faróis" weight=67
+    export function todosOsFarois(col: COLOR): void {
+        tiraDeFarois().showColor(corHex(col));
+    }
+
+    /**
+     * Acende um farol misturando vermelho, verde e azul.
+     */
+    //% blockId=turtle_headlight_rgb
+    //% block="definir farol $n com R:$red G:$green B:$blue"
+    //% n.min=0 n.max=3 n.defl=0
+    //% red.min=0 red.max=255 red.defl=255
+    //% green.min=0 green.max=255 green.defl=0
+    //% blue.min=0 blue.max=255 blue.defl=0
+    //% group="Faróis" weight=66
+    export function farolRGB(n: number, red: number, green: number, blue: number): void {
+        const s = tiraDeFarois();
+        s.setPixelColor(Math.constrain(n, 0, NUM_FAROIS - 1), neopixel.rgb(red, green, blue));
+        s.show();
+    }
+
+    /**
+     * Brilho dos faróis (0 a 255). Valores altos consomem muita bateria.
+     */
+    //% blockId=turtle_headlight_brightness
+    //% block="brilho dos faróis $b"
+    //% b.min=0 b.max=255 b.defl=60
+    //% group="Faróis" weight=65
+    export function brilhoDosFarois(b: number): void {
+        const s = tiraDeFarois();
+        s.setBrightness(Math.constrain(b, 0, 255));
+        s.show();
+    }
+
+    /**
+     * Pinta os quatro faróis com as cores do arco-íris.
+     */
+    //% blockId=turtle_headlight_rainbow
+    //% block="arco-íris nos faróis"
+    //% group="Faróis" weight=64
+    export function arcoIrisNosFarois(): void {
+        const s = tiraDeFarois();
+        s.showRainbow(1, 360);
+    }
+
+    /**
+     * Apaga os quatro faróis.
+     */
+    //% blockId=turtle_headlights_off
+    //% block="desligar faróis"
+    //% group="Faróis" weight=63
+    export function desligarFarois(): void {
+        const s = tiraDeFarois();
+        s.clear();
+        s.show();
+    }
+
+    // =====================================================================
+    // SENSORES
+    // =====================================================================
+
+    let nivelDaLinha = 0;     // leitura digital que significa "estou vendo a linha"
+    let ultimoErro = 0;
+
+    /**
+     * Ajusta a polaridade dos sensores de linha.
+     * Cada módulo TCRT5000 sai de fábrica com o potenciômetro num ponto,
+     * então nem todo carro lê a linha preta como 0. Teste com o bloco
+     * "mostrar sensores de linha" e troque aqui se estiver invertido.
+     */
+    //% blockId=turtle_line_level
+    //% block="linha detectada quando a leitura for $nivel"
+    //% group="Sensor" weight=59
+    //% advanced=true
+    export function configurarNivelDaLinha(nivel: LINE_LEVEL): void {
+        nivelDaLinha = nivel;
+    }
+
+    function lerBruto(lt: LT): number {
+        switch (lt) {
+            case LT.Left: return pins.digitalReadPin(DigitalPin.P14);
+            case LT.Center: return pins.digitalReadPin(DigitalPin.P15);
+            default: return pins.digitalReadPin(DigitalPin.P16);
+        }
+    }
+
+    /**
+     * Verdadeiro quando aquele sensor está enxergando a linha.
+     */
+    //% blockId=turtle_sees_line
+    //% block="vê linha à $lt"
+    //% group="Sensor" weight=70
+    export function verLinha(lt: LT): boolean {
+        return lerBruto(lt) == nivelDaLinha;
+    }
+
+    /**
+     * Onde a linha está em relação ao centro do carro:
+     *   -2 = bem à esquerda    -1 = um pouco à esquerda
+     *    0 = centralizada
+     *   +1 = um pouco à direita  +2 = bem à direita
+     * Se o carro perder a linha, o bloco continua devolvendo o último valor
+     * conhecido — é isso que faz o robô voltar sozinho para a pista.
+     */
+    //% blockId=turtle_line_position
+    //% block="posição da linha"
     //% group="Sensor" weight=69
-    export function LineTracking(): number {
-        let val = 0;
-        /*switch(lt){
-            case LT.Left  :
-                val = pins.digitalReadPin(DigitalPin.P14);
-                break;
-            case LT.Center:
-                val = pins.digitalReadPin(DigitalPin.P15);
-                break;
-            case LT.Right :
-                val = pins.digitalReadPin(DigitalPin.P16);
-                break;
-        }*/
-        val = (pins.digitalReadPin(DigitalPin.P14) << 2) +
-            (pins.digitalReadPin(DigitalPin.P15) << 1) +
-            (pins.digitalReadPin(DigitalPin.P16));
-        return val;
+    export function posicaoDaLinha(): number {
+        const e = verLinha(LT.Left) ? 1 : 0;
+        const c = verLinha(LT.Center) ? 1 : 0;
+        const d = verLinha(LT.Right) ? 1 : 0;
+
+        if (e == 0 && c == 0 && d == 0) return ultimoErro;   // perdeu a linha
+        if (e == 1 && c == 1 && d == 1) return 0;            // cruzamento
+
+        let erro = ultimoErro;
+        if (e == 0 && c == 1 && d == 0) erro = 0;
+        else if (e == 1 && c == 1 && d == 0) erro = -1;
+        else if (e == 1 && c == 0 && d == 0) erro = -2;
+        else if (e == 0 && c == 1 && d == 1) erro = 1;
+        else if (e == 0 && c == 0 && d == 1) erro = 2;
+
+        ultimoErro = erro;
+        return erro;
     }
+
     /**
-     * Sensor ultrassônico (distância em cm)
+     * Os três sensores num número de 0 a 7.
+     * Cada bit vale 1 quando aquele sensor vê a linha:
+     * 4 = esquerda, 2 = centro, 1 = direita.
      */
-    let lastTime = 0;
-    //% block="sensor ultrassônico"
+    //% blockId=turtle_line_tracking
+    //% block="sensor de linha"
     //% group="Sensor" weight=68
-    export function ultra(): number {
-        //envia pulso de trig
-        pins.setPull(DigitalPin.P1, PinPullMode.PullNone);
-        pins.digitalWritePin(DigitalPin.P1, 0)
-        control.waitMicros(2);
-        pins.digitalWritePin(DigitalPin.P1, 1)
-        control.waitMicros(10);
-        pins.digitalWritePin(DigitalPin.P1, 0)
-
-        // lê o pulso de eco  distância máxima : 6m(35000us)  
-        let t = pins.pulseIn(DigitalPin.P2, PulseValue.High, 35000);
-        let ret = t;
-
-        //eliminar dados ruins ocasionais
-        if (ret == 0 && lastTime != 0) {
-            ret = lastTime;
-        }
-        lastTime = t;
-
-        return Math.round(ret / 58);
+    //% advanced=true
+    export function LineTracking(): number {
+        return ((verLinha(LT.Left) ? 1 : 0) << 2)
+            + ((verLinha(LT.Center) ? 1 : 0) << 1)
+            + (verLinha(LT.Right) ? 1 : 0);
     }
+
+    const DIST_MAX = 255;
+    let ultimaDistancia = DIST_MAX;
+
     /**
-     * Botão na placa controladora
+     * Distância até o obstáculo, em centímetros.
+     * Quando não há nada na frente, devolve 255.
      */
-    //% block="botão"
+    //% blockId=turtle_ultra
+    //% block="distância (cm)"
+    //% group="Sensor" weight=67
+    export function ultra(): number {
+        pins.setPull(DigitalPin.P1, PinPullMode.PullNone);
+        pins.digitalWritePin(DigitalPin.P1, 0);
+        control.waitMicros(2);
+        pins.digitalWritePin(DigitalPin.P1, 1);
+        control.waitMicros(10);
+        pins.digitalWritePin(DigitalPin.P1, 0);
+
+        const t = pins.pulseIn(DigitalPin.P2, PulseValue.High, 25000);
+        if (t == 0) {
+            // um eco perdido isolado não deve virar leitura falsa
+            const anterior = ultimaDistancia;
+            ultimaDistancia = DIST_MAX;
+            return anterior;
+        }
+        const cm = Math.round(t / 58);
+        ultimaDistancia = cm > DIST_MAX ? DIST_MAX : cm;
+        return ultimaDistancia;
+    }
+
+    // ---------------------------------------------------------------------
+    // Eventos
+    // ---------------------------------------------------------------------
+
+    let limiteObstaculo = 15;
+    let obstaculoHandler: () => void = null;
+    let obstaculoArmado = true;
+
+    let perdaHandler: () => void = null;
+    let perdaArmada = true;
+
+    let monitorAtivo = false;
+
+    function iniciarMonitor(): void {
+        if (monitorAtivo) return;
+        monitorAtivo = true;
+        control.inBackground(() => {
+            while (true) {
+                if (obstaculoHandler) {
+                    const d = ultra();
+                    if (d < limiteObstaculo) {
+                        if (obstaculoArmado) {
+                            obstaculoArmado = false;
+                            obstaculoHandler();
+                        }
+                    } else if (d > limiteObstaculo + 3) {
+                        obstaculoArmado = true;
+                    }
+                }
+                if (perdaHandler) {
+                    const semLinha = !verLinha(LT.Left) && !verLinha(LT.Center) && !verLinha(LT.Right);
+                    if (semLinha) {
+                        if (perdaArmada) {
+                            perdaArmada = false;
+                            perdaHandler();
+                        }
+                    } else {
+                        perdaArmada = true;
+                    }
+                }
+                basic.pause(50);
+            }
+        });
+    }
+
+    /**
+     * Executa os blocos de dentro quando algo aparece na frente do carro.
+     */
+    //% blockId=turtle_on_obstacle
+    //% block="quando o obstáculo estiver a menos de $cm cm"
+    //% cm.min=2 cm.max=200 cm.defl=15
     //% group="Sensor" weight=66
-    export function button(): number {
-        return pins.digitalReadPin(DigitalPin.P5);
+    export function aoDetectarObstaculo(cm: number, handler: () => void): void {
+        limiteObstaculo = cm;
+        obstaculoHandler = handler;
+        iniciarMonitor();
+    }
+
+    /**
+     * Executa os blocos de dentro quando os três sensores perdem a linha.
+     */
+    //% blockId=turtle_on_line_lost
+    //% block="quando o carro perder a linha"
+    //% group="Sensor" weight=65
+    export function aoPerderALinha(handler: () => void): void {
+        perdaHandler = handler;
+        iniciarMonitor();
+    }
+
+    // =====================================================================
+    // SOM — buzzer passivo no P0
+    // =====================================================================
+
+    /**
+     * Manda o som para o buzzer do carro em vez do alto-falante do micro:bit.
+     * Sem este bloco, no micro:bit V2 o buzzer da placa fica mudo.
+     * Use uma vez, no "ao iniciar".
+     */
+    //% blockId=turtle_use_buzzer
+    //% block="usar o buzzer do carro"
+    //% group="Som" weight=49
+    export function usarBuzzerDoCarro(): void {
+        pins.analogSetPitchPin(AnalogPin.P0);
+    }
+
+    /**
+     * Um bipe curto no buzzer do carro.
+     */
+    //% blockId=turtle_beep
+    //% block="bipar por $ms ms"
+    //% ms.shadow=timePicker ms.defl=200
+    //% group="Som" weight=48
+    export function bipar(ms: number): void {
+        music.playTone(988, ms);
+    }
+
+    // =====================================================================
+    // DIAGNÓSTICO
+    // =====================================================================
+
+    /**
+     * Desenha na matriz de LEDs o que os três sensores de linha estão vendo.
+     * Coloque dentro de um laço "sempre" para ajustar os potenciômetros.
+     */
+    //% blockId=turtle_show_line
+    //% block="mostrar sensores de linha"
+    //% group="Diagnóstico" weight=39
+    export function mostrarSensoresDeLinha(): void {
+        basic.clearScreen();
+        const colunas = [0, 2, 4];
+        const sensores = [LT.Left, LT.Center, LT.Right];
+        for (let i = 0; i < 3; i++) {
+            if (verLinha(sensores[i])) {
+                for (let y = 0; y < 5; y++) {
+                    led.plot(colunas[i], y);
+                }
+            } else {
+                led.plot(colunas[i], 2);
+            }
+        }
+    }
+
+    /**
+     * Autoteste do carro: LEDs, faróis, motores e sensores, em sequência.
+     * Rode no começo da aula para saber qual robô está com problema
+     * antes de os alunos começarem.
+     */
+    //% blockId=turtle_selftest
+    //% block="testar o carro"
+    //% group="Diagnóstico" weight=38
+    export function testarOCarro(): void {
+        iniciar();
+        basic.showString("T");
+
+        // LEDs RGB da placa
+        BothLed(COLOR.red); basic.pause(400);
+        BothLed(COLOR.green); basic.pause(400);
+        BothLed(COLOR.blue); basic.pause(400);
+        OFFLed();
+
+        // Faróis
+        todosOsFarois(COLOR.white); basic.pause(400);
+        arcoIrisNosFarois(); basic.pause(600);
+        desligarFarois();
+
+        // Motores, um de cada vez
+        basic.showArrow(ArrowNames.West);
+        rodas(40, 0); basic.pause(600); state(MotorState.stop);
+        basic.pause(300);
+        basic.showArrow(ArrowNames.East);
+        rodas(0, 40); basic.pause(600); state(MotorState.stop);
+        basic.pause(300);
+
+        // Sensores de linha por 3 segundos
+        for (let i = 0; i < 30; i++) {
+            mostrarSensoresDeLinha();
+            basic.pause(100);
+        }
+
+        // Distância
+        basic.clearScreen();
+        basic.showNumber(ultra());
+        basic.pause(500);
+        basic.showIcon(IconNames.Yes);
     }
 }
