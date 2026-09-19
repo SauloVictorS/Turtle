@@ -1,6 +1,6 @@
 {
     "name": "pxt_turtle",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "description": "Blocos em português para o carrinho Keyestudio Micro:bit Turtle Car (KS4014/KS4024) — motores, LEDs RGB, faróis WS2812, sensor de linha, ultrassônico, controle remoto IR e diagnóstico. Projeto Azurita Conectada / CONDECOMA.",
     "license": "MIT",
     "dependencies": {
